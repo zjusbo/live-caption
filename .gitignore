@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.srt
+downloads/
+.download.conf
+cookies*.txt
+.ig_download.conf
+.build/
+.DS_Store

@@ -70,7 +70,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 1. **Capture**: `live_captions_helper` (Swift, Core Audio process tap) records system audio at 16 kHz mono. It is audio-only, so DRM-protected video players keep showing their video
 2. **Segment**: an energy gate cuts the stream at short pauses (≤ 6 s per chunk)
 3. **Transcribe**: `mlx-whisper` with the same hallucination filters as the batch tool
-4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, about 0.05 s a line. `--translator claude` uses Claude (`claude-haiku-5-5`, paid API) instead, which handles casual speech better because it sees the previous lines
+4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, no API key, about 0.05 s a line
 5. **Show**: the helper draws a click-through subtitle bar at the bottom of the active screen
 
 ```bash
@@ -88,8 +88,6 @@ Apple Translation needs the Japanese and Chinese (Simplified) languages download
 | `--font-size` / `--hold` | `34` / `6` | Subtitle size (pt) / seconds it stays up |
 | `--capture` | `tap` | `screen` uses ScreenCaptureKit instead (DRM players then show a black screen) |
 | `--lang` | `ja` | Spoken language code, or `auto` |
-| `--translator` | `apple` | `apple` (on-device, free) or `claude` (API, paid) |
-| `--claude-model` | `claude-haiku-5-5` | Claude model used with `--translator claude` |
 | `--silence-db` | `-45` | Raise it (e.g. `-35`) if background music keeps chunks from ending |
 | `--pause` / `--max-len` | `0.5` / `6` | Pause that ends a line / longest chunk (s) |
 

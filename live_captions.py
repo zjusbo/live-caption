@@ -6,17 +6,20 @@ System audio (Core Audio process tap, via live_captions_helper) → speech chunk
 at pauses → mlx-whisper (Japanese) → Simplified Chinese → a floating subtitle bar
 drawn by the helper above every window, full-screen video included.
 
-Translation is Apple's on-device Translation framework, done inside the helper:
-free, offline, no API key.
+Translation is Apple's on-device Translation framework by default (free, offline,
+done inside the helper), or Claude with --translator claude (paid API, better
+with casual speech because it sees the previous lines).
 
 Usage:
     ./live.sh                         # caption system audio
     ./live.sh --show-original         # also show the Japanese line
+    ./live.sh --translator claude     # translate with Claude instead of Apple
     ./live.sh --file clip.mp4         # test on a file instead of system audio
 """
 
 import argparse
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -27,8 +30,9 @@ from pathlib import Path
 
 import numpy as np
 
-# Reuse the batch tool's model table and hallucination filters.
+# Reuse the batch tool's model table and hallucination filters (also loads .env).
 from transcribe_to_srt import _MLX_MODELS, clean_segments
+import anthropic
 
 SAMPLE_RATE = 16000
 FRAME = 480                      # 30 ms analysis frames
@@ -109,7 +113,7 @@ class Segmenter:
         return np.concatenate(frames)
 
 
-# ── Transcription ────────────────────────────────────────────────────────────
+# ── Transcription & translation ──────────────────────────────────────────────
 
 # Short-chunk version of transcribe_to_srt._DECODE_OPTIONS: no previous-text
 # conditioning (stops hallucination cascades); word timestamps aren't worth
@@ -128,6 +132,54 @@ def transcribe_chunk(audio: np.ndarray, repo: str, language: str | None) -> str:
     return " ".join(seg["text"] for seg in clean_segments(result["segments"]))
 
 
+_SYSTEM_PROMPT = (
+    "You translate live video subtitles into Simplified Chinese. "
+    "Each request has the line to translate, sometimes preceded by earlier lines for context. "
+    "Reply with ONLY the Chinese translation of the line — concise, natural subtitle wording, "
+    "no quotes, notes or romanization. Render interjections and non-verbal sounds naturally "
+    "(e.g. 啊、嗯). Speech recognition may contain small errors; translate the most likely meaning."
+)
+
+
+class Translator:
+    def __init__(self, model: str, context_lines: int = 6):
+        self.client = anthropic.Anthropic()
+        self.model = model
+        self.history: deque = deque(maxlen=context_lines)
+
+    def __call__(self, ja: str) -> str:
+        prompt = ""
+        if self.history:
+            prompt = "Earlier lines (context only):\n" + "\n".join(self.history) + "\n\n"
+        prompt += f"Translate:\n{ja}"
+        msg = self.client.messages.create(
+            model=self.model,
+            max_tokens=400,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self.history.append(ja)
+        zh = next((b.text for b in msg.content if b.type == "text"), "").strip()
+        return zh if msg.stop_reason != "refusal" else ""
+
+
+def translate_worker(lines: queue.Queue, translate: Translator, show) -> None:
+    """Translate finished lines in order; merge a backlog so subtitles don't fall behind."""
+    while (ja := lines.get()) is not None:
+        while not lines.empty():
+            nxt = lines.get()
+            if nxt is None:
+                lines.put(None)
+                break
+            ja += " " + nxt
+        try:
+            zh = translate(ja)
+        except anthropic.APIError as e:
+            print(f"  ⚠  translation failed: {e}", file=sys.stderr)
+            zh = ""
+        show(zh or ja, ja)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -136,6 +188,11 @@ def main() -> None:
                         help="Whisper model (default: large-v3-turbo)")
     parser.add_argument("--lang", default="ja",
                         help="Spoken language code, or 'auto' to detect (default: ja)")
+    parser.add_argument("--translator", default="apple", choices=["apple", "claude"],
+                        help="'apple' = on-device Apple Translation, free (default); "
+                             "'claude' = Claude API, paid, better with casual speech")
+    parser.add_argument("--claude-model", default="claude-haiku-5-5",
+                        help="Claude model for --translator claude (default: claude-haiku-5-5)")
     parser.add_argument("--show-original", action="store_true",
                         help="Show the transcribed line under the Chinese one")
     parser.add_argument("--font-size", type=float, default=34, help="Subtitle size in points (default: 34)")
@@ -152,23 +209,36 @@ def main() -> None:
     parser.add_argument("--file", help="Caption this media file instead of system audio (testing)")
     args = parser.parse_args()
 
+    if args.translator == "claude" and not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("Error: --translator claude needs an API key. Run: cp .env.example .env, "
+                 "then set ANTHROPIC_API_KEY in .env.")
     if not HELPER.exists():
         sys.exit(f"Error: {HELPER} not built — run ./live.sh, which compiles it.")
 
     helper_cmd = [str(HELPER), "--font-size", str(args.font_size), "--hold", str(args.hold),
-                  "--capture", "none" if args.file else args.capture, "--source", args.lang, "--translate"]
+                  "--capture", "none" if args.file else args.capture, "--source", args.lang]
+    if args.translator == "apple":
+        helper_cmd.append("--translate")
     if args.show_original:
         helper_cmd.append("--show-original")
     helper = subprocess.Popen(helper_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
-    def send(msg: dict) -> None:
-        try:
-            helper.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode())
-            helper.stdin.flush()
-        except BrokenPipeError:
-            pass  # helper exited; main() reports why once its audio stream ends
+    show_lock = threading.Lock()
 
-    def translate(ja: str) -> None:
+    def send(msg: dict) -> None:
+        with show_lock:
+            line = json.dumps(msg, ensure_ascii=False)
+            try:
+                helper.stdin.write((line + "\n").encode())
+                helper.stdin.flush()
+            except BrokenPipeError:
+                pass  # helper exited; main() reports why once its audio stream ends
+
+    def show(zh: str, ja: str) -> None:
+        print(f"{time.strftime('%H:%M:%S')}  {ja + chr(10) + ' ' * 10 if ja else ''}{zh}", flush=True)
+        send({"zh": zh, "ja": ja})
+
+    def translate_on_device(ja: str) -> None:
         print(f"{time.strftime('%H:%M:%S')}  {ja}", flush=True)  # the helper prints the Chinese
         send({"ja": ja})
 
@@ -182,8 +252,7 @@ def main() -> None:
               "This happens once and can take several minutes.", flush=True)
     print(f"Loading Whisper '{args.model}' …", flush=True)
     transcribe_chunk(np.zeros(SAMPLE_RATE, dtype=np.float32), repo, language)  # warm-up
-    print(f"{time.strftime('%H:%M:%S')}  字幕已就绪", flush=True)
-    send({"zh": "字幕已就绪"})  # has "zh", so shown as-is
+    show("字幕已就绪", "")
 
     frames: queue.Queue = queue.Queue()
     if args.file:
@@ -191,14 +260,25 @@ def main() -> None:
     else:
         threading.Thread(target=read_pcm, args=(helper.stdout, frames), daemon=True).start()
 
+    lines: queue.Queue = queue.Queue()
+    worker = None
+    if args.translator == "claude":
+        worker = threading.Thread(target=translate_worker,
+                                  args=(lines, Translator(args.claude_model), show), daemon=True)
+        worker.start()
+    emit = lines.put if worker else translate_on_device
+
     segmenter = Segmenter(args.silence_db, args.pause, args.max_len)
     print("Listening — Ctrl+C to stop.\n", flush=True)
     try:
         while (frame := frames.get()) is not None:
             if (audio := segmenter.push(frame)) is not None and (text := transcribe_chunk(audio, repo, language)):
-                translate(text)
+                emit(text)
         if (audio := segmenter.flush()) is not None and (text := transcribe_chunk(audio, repo, language)):
-            translate(text)
+            emit(text)
+        if worker:
+            lines.put(None)
+            worker.join()
         time.sleep(args.hold if args.file else 0)  # let the last subtitle be seen
     except KeyboardInterrupt:
         pass

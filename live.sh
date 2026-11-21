@@ -6,6 +6,7 @@ set -euo pipefail
 #
 # Options:
 #   --show-original            Also show the Japanese line
+#   --translator claude        Translate with the Claude API (paid) instead of Apple
 #   --font-size <pt>           Subtitle size (default: 34)
 #   --lang <code|auto>         Spoken language (default: ja)
 #   --file <media>             Caption a file instead of system audio (testing)

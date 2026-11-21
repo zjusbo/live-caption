@@ -1,6 +1,6 @@
 # Live Caption
 
-Real-time Simplified Chinese subtitles for whatever your Mac is playing: any app, full-screen video included. Speech recognition and translation both run on your Mac, so there's no API key, no per-use cost, and nothing is saved to disk.
+Real-time Simplified Chinese subtitles for whatever your Mac is playing: any app, full-screen video included. Speech recognition and translation both run on your Mac, so there's no API key, no per-use cost, and nothing is saved to disk. Optionally, `--translator claude` translates with the Claude API instead (paid).
 
 ## Requirements
 
@@ -31,12 +31,13 @@ The first run compiles the native helper and downloads the Whisper model (about 
 1. **Capture**: `live_captions_helper` (Swift, Core Audio process tap) records system audio at 16 kHz mono. It is audio-only, so DRM-protected video players keep showing their video
 2. **Segment**: an energy gate cuts the stream at short pauses (≤ 6 s per chunk)
 3. **Transcribe**: `mlx-whisper` with the same hallucination filters as the batch tool
-4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, no API key, about 0.05 s a line
+4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, no API key, about 0.05 s a line. With `--translator claude`, Claude (`claude-haiku-5-5`) translates instead: paid, but better with casual speech because it sees the previous lines
 5. **Show**: the helper draws a click-through subtitle bar at the bottom of the active screen
 
 ```bash
 ./live.sh                    # Ctrl+C to stop
 ./live.sh --show-original    # Chinese + Japanese
+./live.sh --translator claude   # Claude API instead of Apple (needs .env, see below)
 ./live.sh --font-size 42 --hold 8
 ./live.sh --file clip.mp4    # test with a file instead of system audio (needs ffmpeg)
 ```
@@ -46,9 +47,13 @@ The first run compiles the native helper and downloads the Whisper model (about 
 | `--show-original` | off | Also show the transcribed line |
 | `--font-size` / `--hold` | `34` / `6` | Subtitle size (pt) / seconds it stays up |
 | `--capture` | `tap` | `screen` uses ScreenCaptureKit instead (DRM players then show a black screen) |
+| `--translator` | `apple` | `apple` (on-device, free) or `claude` (Claude API, paid) |
+| `--claude-model` | `claude-haiku-5-5` | Claude model used with `--translator claude` |
 | `--lang` | `ja` | Spoken language code, or `auto` |
 | `--silence-db` | `-45` | Raise it (e.g. `-35`) if background music keeps chunks from ending |
 | `--pause` / `--max-len` | `0.5` / `6` | Pause that ends a line / longest chunk (s) |
+
+**Claude translation (optional):** run `cp .env.example .env` and put your key from the [Anthropic Console](https://console.anthropic.com/) in `ANTHROPIC_API_KEY`. Claude Haiku 5.5 costs about $0.05 per 2-hour video. Anthropic's usage policy restricts sexually explicit content, so keep the default Apple translator for that kind of video.
 
 ## Subtitle files for videos (`run.sh`)
 

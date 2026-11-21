@@ -20,7 +20,7 @@ PYTHON="$VENV/bin/python"
 
 if [[ ! -f "$PYTHON" ]]; then
   echo "Error: virtual environment not found at $VENV"
-  echo "Run: python3 -m venv .venv && .venv/bin/pip install openai-whisper anthropic python-dotenv"
+  echo "Run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
   exit 1
 fi
 

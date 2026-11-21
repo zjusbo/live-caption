@@ -174,6 +174,12 @@ def main() -> None:
 
     repo = _MLX_MODELS[args.model]
     language = None if args.lang == "auto" else args.lang
+    from huggingface_hub import try_to_load_from_cache
+    from huggingface_hub.utils import logging as hf_logging
+    hf_logging.set_verbosity_error()  # hide "unauthenticated requests" server notices
+    if not any(isinstance(try_to_load_from_cache(repo, f), str) for f in ("weights.safetensors", "weights.npz")):
+        print(f"First run: downloading the Whisper '{args.model}' model (about 1.6 GB for large-v3-turbo). "
+              "This happens once and can take several minutes.", flush=True)
     print(f"Loading Whisper '{args.model}' …", flush=True)
     transcribe_chunk(np.zeros(SAMPLE_RATE, dtype=np.float32), repo, language)  # warm-up
     print(f"{time.strftime('%H:%M:%S')}  字幕已就绪", flush=True)

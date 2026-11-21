@@ -138,7 +138,10 @@ final class ProcessTap {
                                               mElement: kAudioObjectPropertyElementMain)
         var value = initial
         var size = UInt32(MemoryLayout<T>.size)
-        try check(AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &value), "read property \(selector)")
+        let status = withUnsafeMutableBytes(of: &value) {
+            AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, $0.baseAddress!)
+        }
+        try check(status, "read property \(selector)")
         return value
     }
 

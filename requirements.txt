@@ -1,0 +1,5 @@
+# Live captions (live.sh) and the .srt tool (run.sh)
+mlx-whisper
+# Used by the .srt tool's Claude translation; live captions import it but never call the API
+anthropic
+python-dotenv

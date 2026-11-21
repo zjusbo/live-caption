@@ -1,8 +1,60 @@
-# Japanese Video Transcriber
+# Live Caption
 
-Transcribes Japanese audio from video files using Whisper, translates each subtitle segment to Simplified Chinese via Claude, and outputs a `.srt` subtitle file.
+Real-time Simplified Chinese subtitles for whatever your Mac is playing: any app, full-screen video included. Speech recognition and translation both run on your Mac, so there's no API key, no per-use cost, and nothing is saved to disk.
+
+## Requirements
+
+- Mac with Apple Silicon (M1 or later), macOS 15 or later
+- Xcode Command Line Tools: `xcode-select --install`
+- Python 3.10+, e.g. `brew install python@3.13` (the `python3` that ships with macOS is 3.9, too old)
+- About 3 GB of disk: 1.3 GB for Python packages, 1.6 GB for the Whisper model
+
+## Quick start
+
+```bash
+git clone https://github.com/zjusbo/live-caption.git
+cd live-caption
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+./live.sh
+```
+
+The first run compiles the native helper and downloads the Whisper model (about 1.6 GB, once). When **字幕已就绪** appears at the bottom of the screen, play something. Press Ctrl+C to stop.
+
+**One-time macOS setup**
+
+1. **Audio permission:** allow your terminal app (Terminal, iTerm, …) under **System Settings → Privacy & Security → Screen & System Audio Recording**, then quit and reopen the terminal. If it's missing, `live.sh` says "20 s of pure silence" while something is playing.
+2. **Translation languages:** download **Japanese** and **Chinese (Simplified)** under **System Settings → General → Language & Region → Translation Languages**. `live.sh` tells you if they're missing.
 
 ## How it works
+
+1. **Capture**: `live_captions_helper` (Swift, Core Audio process tap) records system audio at 16 kHz mono. It is audio-only, so DRM-protected video players keep showing their video
+2. **Segment**: an energy gate cuts the stream at short pauses (≤ 6 s per chunk)
+3. **Transcribe**: `mlx-whisper` with the same hallucination filters as the batch tool
+4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, no API key, about 0.05 s a line
+5. **Show**: the helper draws a click-through subtitle bar at the bottom of the active screen
+
+```bash
+./live.sh                    # Ctrl+C to stop
+./live.sh --show-original    # Chinese + Japanese
+./live.sh --font-size 42 --hold 8
+./live.sh --file clip.mp4    # test with a file instead of system audio (needs ffmpeg)
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--show-original` | off | Also show the transcribed line |
+| `--font-size` / `--hold` | `34` / `6` | Subtitle size (pt) / seconds it stays up |
+| `--capture` | `tap` | `screen` uses ScreenCaptureKit instead (DRM players then show a black screen) |
+| `--lang` | `ja` | Spoken language code, or `auto` |
+| `--silence-db` | `-45` | Raise it (e.g. `-35`) if background music keeps chunks from ending |
+| `--pause` / `--max-len` | `0.5` / `6` | Pause that ends a line / longest chunk (s) |
+
+## Subtitle files for videos (`run.sh`)
+
+A separate, optional tool: transcribes Japanese audio from a video file with Whisper, translates each subtitle segment to Simplified Chinese via Claude, and writes a `.srt` subtitle file. Unlike live captions, it uses the paid Claude API.
+
+### How it works
 
 1. **Extract** — ffmpeg cuts the requested time range from the video into a temp wav file
 2. **Transcribe** — `mlx-whisper` (Apple MLX backend) transcribes the audio in Japanese
@@ -10,19 +62,16 @@ Transcribes Japanese audio from video files using Whisper, translates each subti
 4. **Translate** — Claude (`claude-opus-4-6`) translates each segment to Simplified Chinese in batches
 5. **Output** — writes a `.srt` file with correct timestamps matching the original video
 
-## Requirements
+### Requirements
 
-- macOS with Apple Silicon (M-series) — uses `mlx-whisper` for fast on-device inference
-- `ffmpeg` — installed via `brew install ffmpeg`
-- Python 3.11+
-- Anthropic API key in `.env`
+Everything live captions need, plus:
 
-## Setup
+- `ffmpeg`: `brew install ffmpeg`
+- An Anthropic API key in `.env`
+
+### Setup
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install openai-whisper anthropic python-dotenv mlx-whisper
-
 cp .env.example .env   # then fill in your key
 ```
 
@@ -31,7 +80,7 @@ cp .env.example .env   # then fill in your key
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Usage
+### Usage
 
 ```bash
 # Basic — transcribe entire video with default model (large-v3-turbo)
@@ -54,7 +103,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ./run.sh video.mp4 -m large
 ```
 
-## Options
+### Options
 
 | Flag | Default | Description |
 |---|---|---|
@@ -63,41 +112,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 | `--duration` | *(full video)* | One or more ranges, comma-separated or repeated: `20m`, `20m-40m`, `90-180`, `1:30-3:00`, `1h-` (to end). Times are bare seconds, `h`/`m`/`s` units, or `[hh:]mm:ss`. Overlapping ranges are merged. |
 | `--batch-size` | `20` | Subtitle segments per Claude API call |
 
-## Live captions
-
-`./live.sh` puts real-time Chinese subtitles over whatever the Mac is playing (any app, full-screen video included), with nothing saved to disk.
-
-1. **Capture**: `live_captions_helper` (Swift, Core Audio process tap) records system audio at 16 kHz mono. It is audio-only, so DRM-protected video players keep showing their video
-2. **Segment**: an energy gate cuts the stream at short pauses (≤ 6 s per chunk)
-3. **Transcribe**: `mlx-whisper` with the same hallucination filters as the batch tool
-4. **Translate**: Apple's on-device Translation framework turns it into Chinese: free, offline, no API key, about 0.05 s a line
-5. **Show**: the helper draws a click-through subtitle bar at the bottom of the active screen
-
-```bash
-./live.sh                    # Ctrl+C to stop
-./live.sh --show-original    # Chinese + Japanese
-./live.sh --font-size 42 --hold 8
-./live.sh --file clip.mp4    # test with a file instead of system audio
-```
-
-Apple Translation needs the Japanese and Chinese (Simplified) languages downloaded under **System Settings → General → Language & Region → Translation Languages**; the helper tells you if they're missing. On first run, allow your terminal app under **System Settings → Privacy & Security → Screen & System Audio Recording**, then restart the terminal. The helper is compiled automatically (needs Xcode Command Line Tools).
-
-| Flag | Default | Description |
-|---|---|---|
-| `--show-original` | off | Also show the transcribed line |
-| `--font-size` / `--hold` | `34` / `6` | Subtitle size (pt) / seconds it stays up |
-| `--capture` | `tap` | `screen` uses ScreenCaptureKit instead (DRM players then show a black screen) |
-| `--lang` | `ja` | Spoken language code, or `auto` |
-| `--silence-db` | `-45` | Raise it (e.g. `-35`) if background music keeps chunks from ending |
-| `--pause` / `--max-len` | `0.5` / `6` | Pause that ends a line / longest chunk (s) |
-
 ## Models
 
 Whisper models are downloaded from HuggingFace (`mlx-community`) on first use and cached at `~/.cache/huggingface/hub/`.
 
 | Model | Size | Notes |
 |---|---|---|
-| `large-v3-turbo` | ~800 MB | **Default.** ~3x faster than large, similar accuracy |
+| `large-v3-turbo` | ~1.6 GB | **Default.** ~3x faster than large, similar accuracy |
 | `large` | ~3 GB | Maximum accuracy |
 | `medium` | ~1.5 GB | Good balance |
 | `small` / `base` / `tiny` | <500 MB | Fast, lower accuracy |
@@ -105,12 +126,12 @@ Whisper models are downloaded from HuggingFace (`mlx-community`) on first use an
 ## Project structure
 
 ```
-transcribe_to_srt.py   # main script
-run.sh                 # convenience wrapper (no venv activation needed)
-live_captions.py       # live captions: segmenting, transcription, translation
-live_captions_helper.swift  # live captions: system audio capture + subtitle overlay
-live.sh                # builds the helper and starts live captions
-.env                   # API key (git-ignored)
-.gitignore
-.venv/                 # Python virtual environment (git-ignored)
+live.sh                     # checks prerequisites, builds the helper, starts live captions
+live_captions.py            # live captions: segmenting and transcription
+live_captions_helper.swift  # live captions: audio capture, Apple translation, subtitle overlay
+run.sh                      # .srt tool wrapper (no venv activation needed)
+transcribe_to_srt.py        # .srt tool; its model table and filters are shared with live captions
+requirements.txt            # Python packages for both tools
+.env.example                # template for the .srt tool's API key
+.venv/                      # Python virtual environment (git-ignored)
 ```

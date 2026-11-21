@@ -53,7 +53,7 @@ The first run compiles the native helper and downloads the Whisper model (about 
 | `--silence-db` | `-45` | Raise it (e.g. `-35`) if background music keeps chunks from ending |
 | `--pause` / `--max-len` | `0.5` / `6` | Pause that ends a line / longest chunk (s) |
 
-**Claude translation (optional):** run `cp .env.example .env` and put your key from the [Anthropic Console](https://console.anthropic.com/) in `ANTHROPIC_API_KEY`. Claude Haiku 5.5 costs about $0.05 per 2-hour video. Anthropic's usage policy restricts sexually explicit content, so keep the default Apple translator for that kind of video.
+**Claude translation (optional):** run `cp .env.example .env` and put your key from the [Anthropic Console](https://console.anthropic.com/) in `ANTHROPIC_API_KEY`. Claude Haiku 5.5 costs about $0.05 per 2-hour video. Any line Claude declines (Anthropic's usage policy restricts sexually explicit content) or doesn't answer with a clean translation is translated by Apple's translator instead, marked `[Apple]` in the terminal. Claude mode therefore also needs the Apple translation languages.
 
 ## Subtitle files for videos (`run.sh`)
 

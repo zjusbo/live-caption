@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -133,12 +134,35 @@ def transcribe_chunk(audio: np.ndarray, repo: str, language: str | None) -> str:
 
 
 _SYSTEM_PROMPT = (
-    "You translate live video subtitles into Simplified Chinese. "
-    "Each request has the line to translate, sometimes preceded by earlier lines for context. "
-    "Reply with ONLY the Chinese translation of the line — concise, natural subtitle wording, "
-    "no quotes, notes or romanization. Render interjections and non-verbal sounds naturally "
-    "(e.g. 啊、嗯). Speech recognition may contain small errors; translate the most likely meaning."
+    "You translate live video subtitles from Japanese into Simplified Chinese. "
+    "The user message has the line to translate inside <line> tags, sometimes preceded by earlier "
+    "lines inside <context> tags. Translate ONLY the <line>; the context is just for meaning. "
+    "Reply with the Chinese subtitle text alone, on one line: no quotes, notes, explanations, "
+    "romanization or Japanese. If the line is only breathing, moaning or other sounds, write the "
+    "sounds themselves in Chinese (e.g. 哈啊…嗯…), never a description of them. "
+    "Speech recognition may contain small errors; translate the most likely meaning."
 )
+
+_KANA = re.compile(r"[\u3040-\u30ff]")
+_LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
+_QUOTES = re.compile(r"[\"“”「」『』]")
+
+
+def usable_translation(zh: str, ja: str) -> str | None:
+    """Return zh if it looks like a bare Chinese subtitle for ja, else None.
+
+    Catches what Claude sometimes sends instead: a refusal or its reasoning in
+    English, the Japanese echoed back, the context lines translated too, or a
+    quoted description of the sounds rather than the sounds.
+    """
+    zh = zh.strip()
+    if not zh or "\n" in zh or _KANA.search(zh) or len(zh) > 3 * len(ja) + 10:
+        return None
+    if _LATIN_WORD.search(zh) and not _LATIN_WORD.search(ja):
+        return None
+    if _QUOTES.search(zh) and not _QUOTES.search(ja):
+        return None
+    return zh
 
 
 class Translator:
@@ -147,24 +171,32 @@ class Translator:
         self.model = model
         self.history: deque = deque(maxlen=context_lines)
 
-    def __call__(self, ja: str) -> str:
+    def __call__(self, ja: str) -> str | None:
+        """Chinese for ja, or None when Claude declined or replied with something else."""
         prompt = ""
         if self.history:
-            prompt = "Earlier lines (context only):\n" + "\n".join(self.history) + "\n\n"
-        prompt += f"Translate:\n{ja}"
+            prompt = "<context>\n" + "\n".join(self.history) + "\n</context>\n"
+        prompt += f"<line>{ja}</line>"
         msg = self.client.messages.create(
             model=self.model,
-            max_tokens=400,
+            max_tokens=200,  # a subtitle line is ~40 tokens; longer replies aren't translations
+            # Haiku 5.5 thinks by default: 300+ tokens on ambiguous lines, which used up
+            # max_tokens before any text (so the Japanese got shown) and added latency.
+            thinking={"type": "disabled"},
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
         self.history.append(ja)
-        zh = next((b.text for b in msg.content if b.type == "text"), "").strip()
-        return zh if msg.stop_reason != "refusal" else ""
+        if msg.stop_reason != "end_turn":  # refusal, or cut off at max_tokens
+            return None
+        return usable_translation("".join(b.text for b in msg.content if b.type == "text"), ja)
 
 
-def translate_worker(lines: queue.Queue, translate: Translator, show) -> None:
-    """Translate finished lines in order; merge a backlog so subtitles don't fall behind."""
+def translate_worker(lines: queue.Queue, translate: Translator, show, fallback) -> None:
+    """Translate finished lines in order; merge a backlog so subtitles don't fall behind.
+
+    Lines Claude won't or doesn't translate go to fallback (Apple's on-device translator).
+    """
     while (ja := lines.get()) is not None:
         while not lines.empty():
             nxt = lines.get()
@@ -176,8 +208,11 @@ def translate_worker(lines: queue.Queue, translate: Translator, show) -> None:
             zh = translate(ja)
         except anthropic.APIError as e:
             print(f"  ⚠  translation failed: {e}", file=sys.stderr)
-            zh = ""
-        show(zh or ja, ja)
+            zh = None
+        if zh:
+            show(zh, ja)
+        else:
+            fallback(ja, " [Apple]")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -216,9 +251,8 @@ def main() -> None:
         sys.exit(f"Error: {HELPER} not built — run ./live.sh, which compiles it.")
 
     helper_cmd = [str(HELPER), "--font-size", str(args.font_size), "--hold", str(args.hold),
-                  "--capture", "none" if args.file else args.capture, "--source", args.lang]
-    if args.translator == "apple":
-        helper_cmd.append("--translate")
+                  "--capture", "none" if args.file else args.capture, "--source", args.lang,
+                  "--translate"]  # also the fallback for lines Claude doesn't translate
     if args.show_original:
         helper_cmd.append("--show-original")
     helper = subprocess.Popen(helper_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -238,8 +272,8 @@ def main() -> None:
         print(f"{time.strftime('%H:%M:%S')}  {ja + chr(10) + ' ' * 10 if ja else ''}{zh}", flush=True)
         send({"zh": zh, "ja": ja})
 
-    def translate_on_device(ja: str) -> None:
-        print(f"{time.strftime('%H:%M:%S')}  {ja}", flush=True)  # the helper prints the Chinese
+    def translate_on_device(ja: str, tag: str = "") -> None:
+        print(f"{time.strftime('%H:%M:%S')}  {ja}{tag}", flush=True)  # the helper prints the Chinese
         send({"ja": ja})
 
     repo = _MLX_MODELS[args.model]
@@ -264,7 +298,8 @@ def main() -> None:
     worker = None
     if args.translator == "claude":
         worker = threading.Thread(target=translate_worker,
-                                  args=(lines, Translator(args.claude_model), show), daemon=True)
+                                  args=(lines, Translator(args.claude_model), show, translate_on_device),
+                                  daemon=True)
         worker.start()
     emit = lines.put if worker else translate_on_device
 
